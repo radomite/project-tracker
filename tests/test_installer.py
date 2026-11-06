@@ -80,6 +80,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(len(key),64)
         self.assertNotIn(key,result.stdout+result.stderr)
         self.assertIn('127.0.0.1:18765',(self.install/'Caddyfile').read_text())
+        self.assertIn('@private path /internal /internal/* /health',(self.install/'Caddyfile').read_text())
         self.assertFalse(any('build' in call for call in calls))
 
     def test_update_pulls_then_stops_then_backs_up_then_starts(self):

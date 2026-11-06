@@ -130,7 +130,7 @@ mv -Tf "$install_dir/current.next" "$current"
 rm -- "$pending"
 # Use the actual effective Compose settings when preparing the Caddy fragment.
 effective_port=$(dc port app 8765 | sed 's/.*://')
-printf '%s {\n    encode zstd gzip\n    reverse_proxy 127.0.0.1:%s\n}\n' "$domain" "$effective_port" >"$install_dir/Caddyfile"
+printf '%s {\n    encode zstd gzip\n    @private path /internal /internal/* /health\n    respond @private 404\n    reverse_proxy 127.0.0.1:%s\n}\n' "$domain" "$effective_port" >"$install_dir/Caddyfile"
 echo "Running commit: $revision"
 echo "Caddy site fragment: $install_dir/Caddyfile"
 echo "Initial setup key file: $secret (not printed in deployment logs)"

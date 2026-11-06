@@ -46,3 +46,7 @@ class DeploymentTests(unittest.TestCase):
                 with self.assertRaises(ValueError):create_app(Path(folder)/'db.sqlite')
                 key.unlink()
                 with self.assertRaises(FileNotFoundError):create_app(Path(folder)/'db.sqlite')
+
+    def test_public_origin_cannot_start_without_protected_first_account_setup(self):
+        with patch.dict(os.environ,{'RESEARCH_PUBLIC_ORIGIN':'https://project.example.org','RESEARCH_SETUP_TOKEN_FILE':''}):
+            with self.assertRaises(ValueError):create_app()

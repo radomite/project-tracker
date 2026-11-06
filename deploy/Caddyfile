@@ -2,5 +2,7 @@
 # Keep the existing curticapean.net sites and routes.
 project.counthom.org {
     encode zstd gzip
+    @private path /internal /internal/* /health
+    respond @private 404
     reverse_proxy 127.0.0.1:18765
 }

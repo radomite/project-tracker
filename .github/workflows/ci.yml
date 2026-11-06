@@ -31,6 +31,16 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
       - run: npx playwright test --config playwright.editor.config.js
+      - name: Retain small browser failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: browser-failure-details
+          path: |
+            test-results/**/error-context.md
+            test-results/**/test-failed-*.png
+          if-no-files-found: ignore
+          retention-days: 3
       - name: Validate production deployment files
         env:
           IMAGE_PREFIX: ghcr.io/example/project-tracker

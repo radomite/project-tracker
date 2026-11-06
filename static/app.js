@@ -550,7 +550,7 @@ const actions={
   topic:el=>{modal.close();return go(S.project.id,Number(el.dataset.id));},
   jump:el=>{modal.close();return jump(Number(el.dataset.id));},
   'auth-switch':el=>auth(el.dataset.mode),
-  logout:async()=>{window.activeManuscript?.destroy();window.activeManuscript=null;await api('/auth/logout','POST');S.user=null;S.csrf='';S.agentDrafts=new Map();history.replaceState(null,'','/');auth();},
+  logout:async()=>{window.activeManuscript?.destroy();window.activeManuscript=null;await api('/auth/logout','POST');S.user=null;S.csrf='';S.agentDrafts=new Map();location.replace('/');},
   'new-project':()=>dialog('New project',`<form id="project-form" class="dialog-body">${formError()}<label for="project-title">Project name</label><input id="project-title" name="title" required maxlength="160"><p class="help">Private project. Only you and collaborators who accept an invitation can access its discussions and files.</p><label for="project-collaborators">Invite collaborators</label><textarea id="project-collaborators" name="collaborators" rows="3" maxlength="12800" placeholder="alice@example.org, bob@example.org" aria-describedby="collaborators-help"></textarea><p class="help" id="collaborators-help">Separate email addresses with commas or new lines. You can invite people later. After creating the project, copy and share their invitation links.</p></form>`,formFooter('project-form','Create project')),
   'new-topic':()=>topicForm(),
   'rename-topic':()=>topicForm(true),
@@ -753,7 +753,7 @@ setInterval(async()=>{
         else await loadTopic({quiet:true});
       }
     }else if(S.view==='settings')await settings();else if(S.view==='files')await loadFiles();else if(S.view==='editor')await loadManuscript();else if(S.view==='agents')await loadAgents();else if(S.view==='search'){S.search={scope:'project',query:'',projectId:S.project.id,results:[],hasMore:false,loading:false,version:S.load};renderSearch();document.querySelector('#project-search').focus();}else await loadOverview();
-  }catch(error){if(error.status===401){S.user=null;auth();}}
+  }catch(error){if(error.status===401){S.user=null;location.reload();}}
   finally{S.polling=false;}
 },8000);
 async function init(){

@@ -208,76 +208,33 @@ or read/write access to one project. Removing a collaborator revokes their keys
 for that project. Linking projects grants no access to the target project.
 Only accessible linked projects are returned.
 
-## API
+## Authentication and access
 
-Interactive reference: **http://127.0.0.1:8765/docs**. The reference UI currently
-uses FastAPI's CDN assets. The application itself serves its assets locally.
+The public UI contains only the login flow and two small assets. Creating the first
+account on a public installation requires the server's setup key. Further accounts
+require an unexpired, single-use invitation for the same email address. There is
+no open registration. Public hosting requires a configured setup-key file; an
+absent or empty file stops startup.
 
-Humans use a session cookie and `X-CSRF-Token` from `/api/v1/auth/me`. Agents
-use `Authorization: Bearer KEY`. Authorship is derived from
-the credential, never accepted from a request field.
+The application shell and assets require a valid human session. All application
+API requests require a valid session or a project-scoped key before request
+parsing. Browser writes also require the session's CSRF token and a matching
+origin. Project access is checked separately for each operation: signing in does
+not grant access to other projects. Expired sessions and revoked keys stop working.
+Editor WebSockets check session, project membership, origin, and CSRF.
 
-Important routes, under `/api/v1/projects/{project_id}`:
+The JSON endpoints support the current interface: projects and invitations,
+messages/topics/search, dashboard questions, files/Git, and project agents.
+API documentation and the OpenAPI schema are disabled. The older item/history,
+note-upload, pinned-question, and open-end/rating APIs are removed. Existing data
+and migrations are preserved; old notes remain available through Files. A
+human-only project JSON export is retained for data portability.
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET / POST | `/topics` | List/create topics |
-| PATCH | `/topics/{topic_id}` | Rename a topic, with revision checking |
-| GET / POST | `/topics/{topic_id}/messages` | List/post messages |
-| GET / PATCH | `/messages/{message_id}` | Read/edit a message |
-| PATCH | `/messages/{message_id}/tags` | Change tags with revision checking |
-| POST | `/messages/{message_id}/move` | Move one/following/all messages |
-| POST | `/topics/{topic_id}/move-messages` | Move selected IDs and revisions |
-| POST | `/read` | Mark explicitly viewed message IDs read for the signed-in user |
-| GET | `/overview` | Dashboard data: main questions and recent messages |
-| GET | `/files` | File/folder tree, versions, branch, Git URL, and integrated history (`history_limit`, default 50, maximum 500) |
-| POST | `/files/commit` | Commit all pending file changes together; optional `message` |
-| GET / PUT | `/files/content?path=proofs/main.tex` | Download/upload original bytes |
-| GET | `/files/preview?path=proofs/main.tex` | Metadata and optional UTF-8 preview |
-| POST | `/files/folders` | Create a nested folder |
-| PATCH / DELETE | `/files/entry` | Rename/move or delete an entry |
-| GET | `/export` | Export current project content as JSON |
-
-`GET /api/v1/search?q=...` searches accessible project, topic, message, tag, and
-file names and UTF-8 file content up to 2 MiB. Add `project_id` to restrict the search to one accessible project.
-`limit` (default 50, maximum 100) and `offset` page through the results. Results
-include their type and project/topic identifiers, with `has_more` for pagination.
-Archived messages are excluded, and agent keys search only their own project.
-
-Uploads use raw bytes and require `If-None-Match: *` for creation, or `If-Match`
-with the file's current ETag for replacement. Rename/delete also require the
-current ETag. Stale edits return 412. Nonempty folders cannot be deleted in the
-browser. Project-scoped read/write keys can use the file API as well as Git.
-Legacy note endpoints remain available for compatibility and import into Files.
-
-Project/topic responses include `last_activity` and the current human user's
-`unread_count`. Topic lists are ordered by recency. Submit up to 200 IDs as
-`{"message_ids":[123,124]}` to `/read`; this is a human-only, idempotent operation
-restricted to that project. Listing messages has no read-status side effects.
-
-Message submission body:
-
-```json
-{"body":"Try a different basis: $M_{ij}$.","tags":["technique","promising"]}
-```
-
-Ordinary messages use `"tags":[]` or omit tags. Message lists return messages in
-chronological order, with `next_before` for older pages. Pass that cursor as
-`before`; default limit is 60, maximum 200. `q` and `tag` filter results.
-Use `Idempotency-Key` for retryable message submissions. Reuse with a changed
-payload returns 409. Mutations and selections include current revisions to avoid
-silently overwriting edits or moving a stale selection.
-
-To reply, include `"reply_to_id":123` in the message submission. Responses include
-`reply_to_id` and a `reply_to` preview with the source message's current topic and
-author. Reply targets must be active messages in the same project and cannot be
-reassigned after sending. Reply links survive edits and moves.
-
-The old `/items` routes remain compatible with the first version. They refer to
-the same records; legacy submissions appear in a General topic. Project
-administration and legacy note uploads are human-only. Read/write keys can submit
-messages, replies, non-question tags, and project files. Legacy open-end/rating API records remain available for
-compatibility and export; the interface uses ordinary tags.
+Project-scoped keys permit only their assigned project and read/write scope.
+Codex uses a separate internal credential and leased project tools. A human
+session or project key cannot act as the Codex supervisor. The production Caddy
+fragment blocks all internal service routes and the local health endpoint.
+The app's port stays bound to server loopback. See [deployment](deploy/README.md).
 
 ## Migration, export, and backup
 

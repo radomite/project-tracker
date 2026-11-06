@@ -1,5 +1,4 @@
 """Local research notebook. Run with: python -m uvicorn app:app --reload."""
-import base64
 from collections import defaultdict, deque
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -13,9 +12,8 @@ import sqlite3
 import time
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 from topic_api import ensure_general, install_topics, migrate_topics, topic_export, unread_count
@@ -130,16 +128,6 @@ class ItemInput(Model):
         return result
 
 
-class ItemUpdate(ItemInput):
-    revision: int = Field(gt=0)
-    archived: bool = False
-
-
-class MainQuestions(Model):
-    question_ids: list[int] = Field(max_length=100)
-    revision: int = Field(gt=0)
-
-
 class ProjectLink(Model):
     project_id: int = Field(gt=0)
 
@@ -220,6 +208,8 @@ def create_app(database=None):
     if setup_token_file and len(setup_token) < 32:
         raise ValueError('The initial setup key file must contain at least 32 characters.')
     public_origin = os.environ.get('RESEARCH_PUBLIC_ORIGIN', '').rstrip('/')
+    if public_origin and not setup_token_file:
+        raise ValueError('Public hosting requires RESEARCH_SETUP_TOKEN_FILE for initial account setup.')
     db_path = Path(database or os.environ.get('RESEARCH_DB', ROOT / 'data' / 'research.db'))
     db_path.parent.mkdir(parents=True, exist_ok=True)
     file_root = db_path.parent / (db_path.stem+'-files')
@@ -248,10 +238,9 @@ def create_app(database=None):
         migrate_questions(db)
         migrate_agents(db)
 
-    app = FastAPI(title='Research project API', version='0.2.0')
+    app = FastAPI(title='Research projects', version='0.3.0', docs_url=None, redoc_url=None, openapi_url=None)
     app.state.database = db_path
     app.state.file_root = file_root
-    security = HTTPBearer(auto_error=False)
     attempts = defaultdict(deque)
 
     def db_dependency():
@@ -262,16 +251,33 @@ def create_app(database=None):
 
     @app.middleware('http')
     async def browser_protection(request, call_next):
+        path = request.url.path
+        public_auth = {('GET','/api/v1/status'), ('POST','/api/v1/auth/login'),
+                       ('POST','/api/v1/auth/setup'), ('POST','/api/v1/auth/register')}
+        response = None
+        private_asset = path.startswith('/static/') and path not in ('/static/login.js','/static/login.css')
+        if private_asset or (path.startswith('/api/') and (request.method,path) not in public_auth):
+            try:
+                with connect() as db:
+                    request.state.principal = authenticate(request, db, session_only=private_asset)
+            except HTTPException as error:
+                response = JSONResponse({'detail':error.detail}, status_code=error.status_code)
+        if path.startswith('/internal/'):
+            try:
+                app.state.authenticate_service(request)
+            except HTTPException as error:
+                response = JSONResponse({'detail':error.detail}, status_code=error.status_code)
         if request.method not in ('GET', 'HEAD', 'OPTIONS'):
             origin = request.headers.get('origin')
             expected = public_origin or str(request.base_url).rstrip('/')
             if (origin and origin != expected) or request.headers.get('sec-fetch-site') == 'cross-site':
-                return JSONResponse({'detail': 'Cross-origin writes are not allowed.'}, status_code=403)
-        response = await call_next(request)
+                response = JSONResponse({'detail': 'Cross-origin writes are not allowed.'}, status_code=403)
+        if response is None:
+            response = await call_next(request)
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['Referrer-Policy'] = 'no-referrer'
         response.headers['X-Frame-Options'] = 'DENY'
-        if request.url.path.startswith('/api/'):
+        if path.startswith(('/api/','/static/','/internal/')) or path == '/':
             response.headers['Cache-Control'] = 'no-store'
         return response
 
@@ -286,18 +292,26 @@ def create_app(database=None):
         return {'user_id': row['user_id'], 'name': row['name'], 'kind': 'agent',
                 'agent_id': row['id'], 'project_id': row['project_id'], 'actor': f'agent:{row["id"]}'}
 
-    def principal(request: Request, db: DB, credential: Annotated[HTTPAuthorizationCredentials | None, Depends(security)]):
-        if credential is not None:
-            return key_person(db, credential.credentials, write=request.method not in ('GET','HEAD'))
+    def authenticate(request, db, session_only=False):
+        authorization = request.headers.get('authorization')
+        if authorization and not session_only:
+            scheme, _, token = authorization.partition(' ')
+            if scheme.casefold() != 'bearer' or not token:
+                raise HTTPException(401, 'Invalid authorization credential.')
+            return key_person(db, token, write=request.method not in ('GET','HEAD'))
         token = request.cookies.get('research_session', '')
         row = db.execute('SELECT s.*,u.name,u.email FROM sessions s JOIN users u ON u.id=s.user_id '
                          'WHERE s.token_hash=? AND s.expires_at>?', (digest(token), now())).fetchone()
         if not row:
             raise HTTPException(401, 'Please sign in.')
-        if request.method not in ('GET', 'HEAD') and not hmac.compare_digest(request.headers.get('x-csrf-token', ''), row['csrf']):
+        if request.method not in ('GET', 'HEAD') and not hmac.compare_digest(request.headers.get('x-csrf-token', '').encode(), row['csrf'].encode()):
             raise HTTPException(403, 'Refresh the page and try again (session token mismatch).')
         return {'user_id': row['user_id'], 'name': row['name'], 'email': row['email'],
                 'kind': 'human', 'agent_id': None, 'actor': f'human:{row["user_id"]}', 'csrf': row['csrf']}
+
+    def principal(request: Request, db: DB):
+        cached = getattr(request.state, 'principal', None)
+        return cached if cached is not None else authenticate(request, db)
 
     Person = Annotated[dict, Depends(principal)]
 
@@ -535,29 +549,6 @@ def create_app(database=None):
     def project(project_id: int, person: Person, db: DB):
         return project_dict(db, project_access(db, project_id, person), person, True)
 
-    @app.put('/api/v1/projects/{project_id}/main-questions')
-    def main_questions(project_id: int, payload: MainQuestions, person: Person, db: DB):
-        human(person)
-        db.execute('BEGIN IMMEDIATE')
-        row = project_access(db, project_id, person)
-        if row['revision'] != payload.revision:
-            raise HTTPException(409, 'The project changed. Refresh and try again.')
-        if len(set(payload.question_ids)) != len(payload.question_ids):
-            raise HTTPException(422, 'Choose each question only once.')
-        for item_id in payload.question_ids:
-            item = get_item(db, project_id, item_id)
-            if item['kind'] != 'question' or item['archived']:
-                raise HTTPException(422, 'Main questions must be active question items in this project.')
-        db.execute('DELETE FROM main_questions WHERE project_id=?', (project_id,))
-        db.executemany('INSERT INTO main_questions VALUES (?,?,?)', [(project_id, item_id, i) for i, item_id in enumerate(payload.question_ids)])
-        db.execute('UPDATE projects SET revision=revision+1 WHERE id=?', (project_id,))
-        project_event(db, project_id, person, 'main_questions', payload.question_ids)
-        return project_dict(db, project_access(db, project_id, person), person, True)
-
-    @app.get('/api/v1/projects/{project_id}/linked-projects')
-    def linked_projects(project_id: int, person: Person, db: DB):
-        project_access(db, project_id, person)
-        return related(db, project_id, person)
 
     @app.post('/api/v1/projects/{project_id}/linked-projects', status_code=201)
     def link_project(project_id: int, payload: ProjectLink, person: Person, db: DB):
@@ -639,111 +630,10 @@ def create_app(database=None):
         db.execute('UPDATE agent_keys SET revoked=1 WHERE id=?', (key_id,))
         return {'ok': True}
 
-    @app.post('/api/v1/projects/{project_id}/items', status_code=201)
-    def create_item(project_id: int, payload: ItemInput, request: Request, response: Response, person: Person, db: DB):
-        db.execute('BEGIN IMMEDIATE')
-        project_access(db, project_id, person)
-        validate_item(db, project_id, payload, person)
-        key = request.headers.get('idempotency-key')
-        fingerprint = digest(json.dumps(payload.model_dump(), sort_keys=True))
-        if key:
-            if len(key) > 200:
-                raise HTTPException(422, 'Idempotency key is too long.')
-            previous = db.execute('SELECT * FROM idempotency WHERE actor=? AND project_id=? AND key=?', (person['actor'], project_id, key)).fetchone()
-            if previous:
-                if previous['fingerprint'] != fingerprint:
-                    raise HTTPException(409, 'That idempotency key was used with different content.')
-                response.headers['Idempotency-Replayed'] = 'true'
-                return json.loads(previous['response'])
-        item = insert_item(db, project_id, payload, person)
-        if key:
-            db.execute('INSERT INTO idempotency VALUES (?,?,?,?,?)', (person['actor'], project_id, key, fingerprint, json.dumps(item)))
-        return item
-
-    @app.get('/api/v1/projects/{project_id}/items')
-    def list_items(project_id: int, person: Person, db: DB, kind: Kind | None = None,
-                   label: str | None = None, status: State | None = None, q: str = '',
-                   author_id: int | None = None, updated_since: datetime | None = None,
-                   include_archived: bool = False, limit: int = Query(30, ge=1, le=100), cursor: str | None = None):
-        project_access(db, project_id, person)
-        where, values = ['project_id=?'], [project_id]
-        if not include_archived and updated_since is None:
-            where.append('archived=0')
-        for column, value in [('kind', kind), ('status', status), ('author_id', author_id)]:
-            if value is not None:
-                where.append(f'{column}=?')
-                values.append(value)
-        if label:
-            where.append('EXISTS (SELECT 1 FROM json_each(items.labels) WHERE value=?)')
-            values.append(label.strip().casefold())
-        if q:
-            where.append('(instr(lower(title),lower(?))>0 OR instr(lower(body),lower(?))>0)')
-            values.extend([q, q])
-        if updated_since:
-            if updated_since.tzinfo is None:
-                raise HTTPException(422, 'updated_since must include a timezone.')
-            where.append('updated_at>?')
-            values.append(updated_since.astimezone(timezone.utc).isoformat(timespec='microseconds'))
-        if cursor:
-            try:
-                before = int(base64.urlsafe_b64decode(cursor.encode()).decode())
-                if before <= 0:
-                    raise ValueError()
-            except (ValueError, UnicodeError):
-                raise HTTPException(422, 'Invalid pagination cursor.')
-            where.append('id<?')
-            values.append(before)
-        rows = db.execute('SELECT * FROM items WHERE ' + ' AND '.join(where) + ' ORDER BY id DESC LIMIT ?', values + [limit + 1]).fetchall()
-        more = len(rows) > limit
-        rows = rows[:limit]
-        next_cursor = base64.urlsafe_b64encode(str(rows[-1]['id']).encode()).decode() if more else None
-        return {'items': [item_dict(db, row) for row in rows], 'next_cursor': next_cursor}
-
-    @app.get('/api/v1/projects/{project_id}/items/{item_id}')
-    def read_item(project_id: int, item_id: int, person: Person, db: DB):
-        project_access(db, project_id, person)
-        result = item_dict(db, get_item(db, project_id, item_id))
-        result['incoming_links'] = [dict(row) for row in db.execute('SELECT l.item_id,l.relation,i.title,i.kind FROM item_links l '
-            'JOIN items i ON i.id=l.item_id WHERE l.target_id=? AND i.archived=0', (item_id,))]
-        return result
-
-    @app.patch('/api/v1/projects/{project_id}/items/{item_id}')
-    def update_item(project_id: int, item_id: int, payload: ItemUpdate, person: Person, db: DB):
-        db.execute('BEGIN IMMEDIATE')
-        row = project_access(db, project_id, person)
-        item = get_item(db, project_id, item_id)
-        if person['kind'] == 'agent':
-            if item['agent_id'] != person['agent_id'] or item['kind'] == 'question' or item['assessment'] != 'unreviewed':
-                raise HTTPException(403, 'Agents can only edit their own unreviewed, non-question items.')
-        elif row['owner_id'] != person['user_id'] and (item['author_id'] != person['user_id'] or item['agent_id'] is not None):
-            raise HTTPException(403, 'You can edit your own entries. The project owner can edit all entries.')
-        if item['revision'] != payload.revision:
-            raise HTTPException(409, 'This item changed. Reopen it before saving your revision.')
-        validate_item(db, project_id, payload, person, item_id)
-        db.execute('UPDATE items SET title=?,body=?,kind=?,labels=?,status=?,assessment=?,model=?,run_id=?,archived=?,revision=revision+1,updated_at=? WHERE id=?',
-                   (payload.title, payload.body, payload.kind, json.dumps(payload.labels), payload.status, payload.assessment,
-                    payload.model, payload.run_id, int(payload.archived), now(), item_id))
-        tags = list(dict.fromkeys(([payload.kind] if payload.kind != 'note' else []) + payload.labels))
-        db.execute('UPDATE items SET tags=? WHERE id=?', (json.dumps(tags), item_id))
-        db.execute('UPDATE topics SET revision=revision+1 WHERE id=?', (item['topic_id'],))
-        db.execute('DELETE FROM item_links WHERE item_id=?', (item_id,))
-        db.executemany('INSERT INTO item_links VALUES (?,?,?)', [(item_id, link.target_id, link.relation) for link in payload.links])
-        if payload.archived or payload.kind != 'question':
-            removed = db.execute('DELETE FROM main_questions WHERE item_id=?', (item_id,)).rowcount
-            if removed:
-                db.execute('UPDATE projects SET revision=revision+1 WHERE id=?', (project_id,))
-                project_event(db, project_id, person, 'main_question_removed', {'item_id': item_id})
-        return record(db, item_id, person)
-
-    @app.get('/api/v1/projects/{project_id}/items/{item_id}/history')
-    def history(project_id: int, item_id: int, person: Person, db: DB):
-        project_access(db, project_id, person)
-        get_item(db, project_id, item_id)
-        return [{'actor': row['actor'], 'created_at': row['created_at'], 'item': json.loads(row['snapshot'])}
-                for row in db.execute('SELECT * FROM history WHERE item_id=? ORDER BY id DESC', (item_id,))]
 
     @app.get('/api/v1/projects/{project_id}/export')
     def export(project_id: int, person: Person, db: DB):
+        human(person)
         project = project_dict(db, project_access(db, project_id, person), person, True)
         return JSONResponse({'format_version': 2, 'exported_at': now(), 'project': project,
             'items': [item_dict(db, row) for row in db.execute('SELECT * FROM items WHERE project_id=? ORDER BY id', (project_id,))],
@@ -764,8 +654,17 @@ def create_app(database=None):
     app.mount('/static', StaticFiles(directory=ROOT / 'static'), name='static')
 
     @app.get('/', include_in_schema=False)
-    def index():
-        return FileResponse(ROOT / 'static' / 'index.html', headers={'Cache-Control': 'no-cache'})
+    def index(request: Request):
+        try:
+            with connect() as db:
+                authenticate(request, db, session_only=True)
+            page = 'index.html'
+        except HTTPException:
+            page = 'login.html'
+        headers={'Cache-Control':'no-store'}
+        if page=='login.html':
+            headers['Content-Security-Policy']="default-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+        return FileResponse(ROOT / 'static' / page, headers=headers)
 
     return app
 

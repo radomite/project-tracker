@@ -31,15 +31,6 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(response.status_code,201,response.text)
         return response.json()
 
-    def end(self, question, **kwargs):
-        response=self.owner.post(self.path_for(f'/questions/{question["id"]}/open-ends'),json=kwargs or {'body':'A possible route'})
-        self.assertEqual(response.status_code,201,response.text)
-        return response.json()
-
-    def pin(self, question):
-        revision=self.owner.get(self.path_for()).json()['revision']
-        response=self.owner.put(self.path_for('/main-questions'),json={'revision':revision,'question_ids':[question['id']]})
-        self.assertEqual(response.status_code,200,response.text)
 
     def test_search_covers_accessible_projects_topics_tags_messages_and_text_notes(self):
         keyword='searchneedle'
@@ -48,9 +39,9 @@ class ChatTests(unittest.TestCase):
         current=self.message('Visible searchneedle message')
         tagged=self.message('A remaining case',tags=[keyword])
         foreign=self.owner.post(self.path_for(f'/topics/{other_tid}/messages',other['id']),json={'body':'Searchneedle from another project'}).json()
-        note=self.owner.post(self.path_for('/notes'),json={'title':'A note','body':'searchneedle in a note'}).json()
-        upload=self.owner.post(self.path_for('/notes/upload?filename=proof.typ'),content=b'= Proof\nsearchneedle in uploaded source')
-        self.assertEqual(upload.status_code,201,upload.text)
+        self.assertEqual(self.owner.put(self.path_for('/files/content?path=notes/A%20note.md'),content=b'searchneedle in a note',headers={'If-None-Match':'*'}).status_code,200)
+        upload=self.owner.put(self.path_for('/files/content?path=notes/proof.typ'),content=b'= Proof\nsearchneedle in uploaded source',headers={'If-None-Match':'*'})
+        self.assertEqual(upload.status_code,200,upload.text)
         archived=self.message('searchneedle archived')
         self.owner.patch(self.path_for(f'/messages/{archived["id"]}'),json={'body':archived['body'],'revision':1,'archived':True})
         response=self.owner.get('/api/v1/search',params={'q':keyword})
@@ -72,7 +63,7 @@ class ChatTests(unittest.TestCase):
 
     def test_search_enforces_membership_and_agent_scope(self):
         other=self.owner.post('/api/v1/projects',json={'title':'Hidden needle project','objective':'Private context'}).json()
-        self.owner.post(self.path_for('/notes',other['id']),json={'title':'Hidden needle note','body':'private'})
+        self.owner.put(self.path_for('/files/content?path=Hidden%20needle%20note.md',other['id']),content=b'private',headers={'If-None-Match':'*'})
         self.message('Visible needle message')
         collaborator,_=self.collaborator()
         result=collaborator.get('/api/v1/search',params={'q':'needle'})
@@ -150,7 +141,7 @@ class ChatTests(unittest.TestCase):
         for tags in [['question'],['QUESTION'],[' question ']]:
             self.assertEqual(agent.post(self.path_for(f'/topics/{self.general()}/messages'),json={'body':'Question','tags':tags}).status_code,403)
         self.assertEqual(agent.patch(self.path_for(f'/messages/{own["id"]}/tags'),json={'tags':['question'],'revision':1}).status_code,403)
-        self.assertEqual(agent.post(self.path_for('/items'),json={'title':'Bypass','body':'No','labels':['question']}).status_code,422)
+        self.assertEqual(agent.post(self.path_for('/items'),json={'title':'Bypass','body':'No','labels':['question']}).status_code,404)
 
     def test_topic_isolation_and_collaborator_reorganization(self):
         bob,_=self.collaborator()
@@ -173,8 +164,8 @@ class ChatTests(unittest.TestCase):
         destination=self.owner.get(self.path_for(f'/topics/{target}/messages')).json()
         self.assertEqual(len(destination['events']),1)
         self.assertEqual(destination['events'][0]['message_ids'],[second['id'],third['id']])
-        history=self.owner.get(self.path_for(f'/items/{second["id"]}/history')).json()
-        self.assertEqual([r['item']['topic_id'] for r in history],[target,self.general()])
+        self.assertEqual(self.owner.get(self.path_for(f'/messages/{second["id"]}')).json()['topic_id'],target)
+        self.assertEqual(self.owner.get(self.path_for(f'/items/{second["id"]}/history')).status_code,404)
         all_move=self.owner.post(self.path_for(f'/messages/{second["id"]}/move'),json={'new_topic_title':'Third topic','mode':'all','revision':2}).json()
         self.assertEqual(all_move['message_ids'],[second['id'],third['id']])
         self.assertEqual(self.owner.get(self.path_for(f'/topics/{target}/messages')).json()['messages'],[])
@@ -209,8 +200,7 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(edited.json()['reply_to_id'],source['id'])
         exported=self.owner.get(self.path_for('/export')).json()
         self.assertIn({'message_id':reply['id'],'reply_to_id':source['id']},exported['replies'])
-        history=self.owner.get(self.path_for(f'/items/{reply["id"]}/history')).json()
-        self.assertEqual(history[0]['item']['reply_to_id'],source['id'])
+        self.assertEqual(self.owner.get(self.path_for(f'/items/{reply["id"]}/history')).status_code,404)
         create_app(self.path)
         self.assertEqual(self.owner.get(self.path_for(f'/messages/{reply["id"]}')).json()['reply_to_id'],source['id'])
         self.assertEqual(self.owner.post(self.path_for(f'/messages/{source["id"]}/fork'),json={'title':'Removed','revision':2}).status_code,404)
@@ -231,7 +221,7 @@ class ChatTests(unittest.TestCase):
         self.assertTrue(current['reply_to']['archived'])
 
     def test_reply_idempotency_and_open_end_as_an_ordinary_tag(self):
-        source=self.message('A question',tags=['question']);self.pin(source)
+        source=self.message('A question',tags=['question'])
         path=self.path_for(f'/topics/{self.general()}/messages')
         payload={'body':'A remaining case','tags':['open end'],'reply_to_id':source['id']}
         first=self.owner.post(path,json=payload,headers={'Idempotency-Key':'reply-test'})
@@ -239,34 +229,13 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(first.status_code,201,first.text)
         self.assertEqual(first.json()['id'],again.json()['id'])
         self.assertEqual(first.json()['tags'],['open end'])
-        self.assertEqual(self.owner.get(self.path_for('/overview')).json()['questions'][0]['open_ends'],[])
+        self.assertNotIn('questions',self.owner.get(self.path_for('/overview')).json())
         changed=self.owner.post(path,json={**payload,'reply_to_id':None},headers={'Idempotency-Key':'reply-test'})
         self.assertEqual(changed.status_code,409)
         agent,_=self.agent()
         reply=self.message('Agent reply',client=agent,reply_to_id=source['id'])
         self.assertEqual(reply['reply_to_id'],source['id'])
 
-    def test_individual_ratings_sort_by_named_actor_and_cannot_spoof(self):
-        question=self.message('Can we improve the bound?',tags=['question']);self.pin(question)
-        end1,end2=self.end(question,body='First approach'),self.end(question,body='Second approach')
-        agent,_=self.agent()
-        for client,eid,score in [(self.owner,end1['id'],5),(self.owner,end2['id'],2),(agent,end1['id'],1),(agent,end2['id'],4)]:
-            result=client.put(self.path_for(f'/open-ends/{eid}/rating'),json={'score':score,'reason':'A stated reason'})
-            self.assertEqual(result.status_code,200,result.text)
-        overview=self.owner.get(self.path_for('/overview')).json()
-        self.assertEqual([e['id'] for e in overview['questions'][0]['open_ends']],[end1['id'],end2['id']])
-        ratings=overview['questions'][0]['open_ends'][0]['ratings']
-        self.assertEqual({r['name'] for r in ratings},{'Ada','Proof assistant'})
-        agent_actor=next(r['actor'] for r in ratings if r['kind']=='agent')
-        ranked=self.owner.get(self.path_for('/overview'),params={'rank_by':agent_actor}).json()
-        self.assertEqual([e['id'] for e in ranked['questions'][0]['open_ends']],[end2['id'],end1['id']])
-        self.assertEqual(agent.put(self.path_for(f'/open-ends/{end1["id"]}/rating'),json={'score':5,'actor':'human:1'}).status_code,422)
-        self.assertEqual(agent.put(self.path_for(f'/open-ends/{end1["id"]}/rating'),json={'score':True}).status_code,422)
-        self.assertEqual(agent.patch(self.path_for(f'/open-ends/{end1["id"]}'),json={'state':'resolved'}).status_code,403)
-        self.owner.patch(self.path_for(f'/open-ends/{end1["id"]}'),json={'state':'resolved'})
-        self.assertEqual(len(self.owner.get(self.path_for('/overview')).json()['questions'][0]['open_ends']),1)
-        fallback=self.owner.get(self.path_for('/overview'),params={'rank_by':'agent:999999'}).json()
-        self.assertEqual(fallback['rank_by'],'human:1')
 
     def test_overview_chooses_15_globally_then_groups_by_current_topic(self):
         tid=self.topic()
@@ -278,19 +247,6 @@ class ChatTests(unittest.TestCase):
         for group in overview['recent_topics']:
             self.assertTrue(all(m['topic_id']==group['topic_id'] for m in group['messages']))
 
-    def test_notes_upload_download_permissions_and_input_limits(self):
-        payload='# A theorem\n$ x^2 $'.encode()
-        response=self.owner.post(self.path_for('/notes/upload'),params={'filename':'proof.typ'},content=payload,headers={'Content-Type':'application/octet-stream'})
-        self.assertEqual(response.status_code,201,response.text)
-        nid=response.json()['id']
-        self.assertEqual(self.owner.get(self.path_for(f'/notes/{nid}/download')).content,payload)
-        self.assertEqual(self.owner.get(self.path_for(f'/notes/{nid}')).json()['source'],payload.decode())
-        agent,_=self.agent()
-        self.assertEqual(agent.post(self.path_for('/notes/upload'),params={'filename':'x.typ'},content=payload).status_code,403)
-        self.assertEqual(self.owner.post(self.path_for('/notes/upload'),params={'filename':'../x.typ'},content=payload).status_code,422)
-        self.assertEqual(self.owner.post(self.path_for('/notes/upload'),params={'filename':'x.typ'},content=b'\xff').status_code,422)
-        self.assertEqual(self.owner.post(self.path_for('/notes/upload'),params={'filename':'x.typ'},content=b'a'*(10*1024*1024+1)).status_code,413)
-        self.assertEqual(len(self.owner.get(self.path_for('/overview')).json()['notes']),1)
 
     def test_message_pagination_idempotency_and_revoked_keys(self):
         for i in range(5):self.message(str(i))

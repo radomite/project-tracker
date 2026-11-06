@@ -1,4 +1,4 @@
-"""Topics, chat messages, project notes, and individual viability ratings."""
+"""Authenticated topics/messages, search, and read-only legacy data export."""
 import base64
 from contextlib import closing
 from datetime import datetime, timezone
@@ -8,10 +8,9 @@ from pathlib import Path
 import sqlite3
 
 from fastapi import HTTPException, Query, Request, Response
-from fastapi.responses import Response as RawResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Literal
-from file_api import import_notes, search_files
+from file_api import search_files
 
 
 def stamp():
@@ -166,33 +165,6 @@ class SelectedMove(Model):
         return self
 
 
-class OpenEndInput(Model):
-    message_id: int | None = Field(default=None, gt=0)
-    body: str | None = Field(default=None, min_length=1, max_length=50000)
-    topic_id: int | None = Field(default=None, gt=0)
-
-    @model_validator(mode='after')
-    def content(self):
-        if (self.message_id is None) == (self.body is None):
-            raise ValueError('Choose an existing message or provide the open end text.')
-        return self
-
-
-class EndState(Model):
-    state: Literal['open', 'resolved']
-
-
-class RatingInput(Model):
-    score: int = Field(ge=1, le=5, strict=True)
-    reason: str = Field(default='', max_length=3000)
-    model: str = Field(default='', max_length=120)
-
-
-class NoteInput(Model):
-    title: str = Field(min_length=1, max_length=200)
-    body: str = Field(min_length=1, max_length=100000)
-
-
 def topic_export(db, project_id):
     notes = []
     for row in db.execute('SELECT * FROM project_notes WHERE project_id=? ORDER BY id', (project_id,)):
@@ -313,25 +285,6 @@ def install_topics(app, *, DB, Person, project_access, human, item_dict, get_ite
             db.execute('UPDATE topics SET revision=revision+1 WHERE id=?', (tid,))
         return ids
 
-    def end_access(db, pid, end_id, person):
-        project_access(db, pid, person)
-        row = db.execute('SELECT e.* FROM open_ends e JOIN items q ON q.id=e.question_id WHERE e.id=? AND q.project_id=?', (end_id, pid)).fetchone()
-        if not row:
-            raise HTTPException(404, 'Open end not found.')
-        return row
-
-    def ratings(db, end_id):
-        return [{'actor': row['actor'], 'name': row['agent_name'] if row['agent_id'] else row['human_name'],
-                 'kind': 'agent' if row['agent_id'] else 'human', 'score': row['score'], 'reason': row['reason'],
-                 'model': row['model'], 'updated_at': row['updated_at']}
-                for row in db.execute('SELECT r.*,u.name AS human_name,k.name AS agent_name FROM viability_ratings r '
-                                      'JOIN users u ON u.id=r.user_id LEFT JOIN agent_keys k ON k.id=r.agent_id WHERE r.open_end_id=? ORDER BY r.agent_id IS NOT NULL,r.actor', (end_id,))]
-
-    def end_dict(db, row):
-        result = dict(row)
-        result['message'] = message_dict(db, db.execute('SELECT * FROM items WHERE id=?', (row['message_id'],)).fetchone())
-        result['ratings'] = ratings(db, row['id'])
-        return result
 
     @app.get('/api/v1/search')
     def search(person: Person, db: DB, q: str = Query(min_length=1, max_length=200),
@@ -552,143 +505,10 @@ def install_topics(app, *, DB, Person, project_access, human, item_dict, get_ite
         ids = move_messages(db, project_id, source, target['id'], 'selected', person, [m.id for m in payload.messages])
         return {'topic_id':target['id'],'message_ids':ids}
 
-    @app.get('/api/v1/projects/{project_id}/questions/{question_id}/open-ends')
-    def open_ends(project_id: int, question_id: int, person: Person, db: DB):
-        project_access(db, project_id, person)
-        get_item(db, project_id, question_id)
-        return [end_dict(db, row) for row in db.execute('SELECT * FROM open_ends WHERE question_id=? ORDER BY id', (question_id,))]
-
-    @app.post('/api/v1/projects/{project_id}/questions/{question_id}/open-ends', status_code=201)
-    def add_open_end(project_id: int, question_id: int, payload: OpenEndInput, person: Person, db: DB):
-        db.execute('BEGIN IMMEDIATE')
-        project_access(db, project_id, person)
-        question = get_item(db, project_id, question_id)
-        if question['kind']!='question' or question['archived']:
-            raise HTTPException(422, 'Choose an active question message.')
-        if payload.message_id:
-            row = get_item(db, project_id, payload.message_id)
-            if row['archived'] or row['id']==question_id:
-                raise HTTPException(422, 'Choose a different, active message as the open end.')
-            mid = row['id']
-        else:
-            tid = payload.topic_id or question['topic_id']
-            topic_access(db, project_id, tid, person)
-            mid = add_message(db, project_id, tid, MessageInput(body=payload.body, tags=['open end']), person)['id']
-        existing = db.execute('SELECT * FROM open_ends WHERE question_id=? AND message_id=?', (question_id, mid)).fetchone()
-        if existing:
-            return end_dict(db, existing)
-        eid = db.execute('INSERT INTO open_ends(question_id,message_id,created_at) VALUES (?,?,?)', (question_id, mid, stamp())).lastrowid
-        db.execute("INSERT OR IGNORE INTO item_links VALUES (?,?,'follows_up')", (mid, question_id))
-        # The connection is part of the message's visible revision history.
-        row = get_item(db, project_id, mid)
-        touch(db, mid, row['topic_id'])
-        record(db, mid, person)
-        return end_dict(db, db.execute('SELECT * FROM open_ends WHERE id=?', (eid,)).fetchone())
-
-    @app.patch('/api/v1/projects/{project_id}/open-ends/{end_id}')
-    def change_open_end(project_id: int, end_id: int, payload: EndState, person: Person, db: DB):
-        human(person)
-        end = end_access(db, project_id, end_id, person)
-        db.execute('UPDATE open_ends SET state=? WHERE id=?', (payload.state, end_id))
-        project_event(db, project_id, person, 'open_end_state', {'id':end_id, 'state':payload.state})
-        return {**dict(end), 'state':payload.state}
-
-    @app.put('/api/v1/projects/{project_id}/open-ends/{end_id}/rating')
-    def rate(project_id: int, end_id: int, payload: RatingInput, person: Person, db: DB):
-        end = end_access(db, project_id, end_id, person)
-        if end['state']!='open':
-            raise HTTPException(422, 'Reopen this open end before rating it.')
-        db.execute('INSERT INTO viability_ratings VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(open_end_id,actor) '
-                   'DO UPDATE SET score=excluded.score,reason=excluded.reason,model=excluded.model,updated_at=excluded.updated_at',
-                   (end_id, person['actor'], person['user_id'], person['agent_id'], payload.score, payload.reason, payload.model, stamp()))
-        project_event(db, project_id, person, 'viability_rating', {'open_end_id':end_id, 'actor':person['actor'], 'score':payload.score, 'reason':payload.reason})
-        return ratings(db, end_id)
-
-    @app.get('/api/v1/projects/{project_id}/open-ends/{end_id}/ratings')
-    def get_ratings(project_id: int, end_id: int, person: Person, db: DB):
-        end_access(db, project_id, end_id, person)
-        return ratings(db, end_id)
-
-    @app.get('/api/v1/projects/{project_id}/notes')
-    def notes(project_id: int, person: Person, db: DB):
-        project_access(db, project_id, person)
-        return [dict(row) for row in db.execute('SELECT id,title,filename,created_at FROM project_notes WHERE project_id=? ORDER BY id DESC', (project_id,))]
-
-    @app.post('/api/v1/projects/{project_id}/notes', status_code=201)
-    def add_note(project_id: int, payload: NoteInput, person: Person, db: DB):
-        human(person)
-        project_access(db, project_id, person)
-        nid = db.execute('INSERT INTO project_notes(project_id,title,body,author_id,created_at) VALUES (?,?,?,?,?)',
-                         (project_id, payload.title, payload.body, person['user_id'], stamp())).lastrowid
-        import_notes(db,app.state.file_root)
-        return {'id':nid, **payload.model_dump()}
-
-    @app.post('/api/v1/projects/{project_id}/notes/upload', status_code=201)
-    async def upload_note(project_id: int, request: Request, person: Person, db: DB, filename: str = Query(min_length=1,max_length=200)):
-        human(person)
-        project_access(db, project_id, person)
-        if '/' in filename or '\\' in filename or any(ord(c)<32 for c in filename) or Path(filename).suffix.casefold() not in ('.typ','.pdf','.md','.txt'):
-            raise HTTPException(422, 'Upload a .typ, .pdf, .md, or .txt file with a plain filename.')
-        data = bytearray()
-        async for chunk in request.stream():
-            data.extend(chunk)
-            if len(data)>10*1024*1024:
-                raise HTTPException(413, 'Notes are limited to 10 MiB per file.')
-        if not data:
-            raise HTTPException(422, 'The uploaded file is empty.')
-        if Path(filename).suffix.casefold()!='.pdf':
-            try:
-                bytes(data).decode('utf-8')
-            except UnicodeDecodeError:
-                raise HTTPException(422, 'Text and Typst notes must use UTF-8.')
-        nid = db.execute('INSERT INTO project_notes(project_id,title,filename,content,author_id,created_at) VALUES (?,?,?,?,?,?)',
-                         (project_id, Path(filename).stem, filename, bytes(data), person['user_id'], stamp())).lastrowid
-        import_notes(db,app.state.file_root)
-        return {'id':nid, 'title':Path(filename).stem, 'filename':filename}
-
-    def note_access(db, pid, nid, person):
-        project_access(db, pid, person)
-        row = db.execute('SELECT * FROM project_notes WHERE project_id=? AND id=?', (pid, nid)).fetchone()
-        if not row:
-            raise HTTPException(404, 'Note not found.')
-        return row
-
-    @app.get('/api/v1/projects/{project_id}/notes/{note_id}')
-    def read_note(project_id: int, note_id: int, person: Person, db: DB):
-        row = note_access(db, project_id, note_id, person)
-        result = {key:row[key] for key in ('id','title','body','filename','created_at')}
-        if row['filename'] and not row['filename'].casefold().endswith('.pdf'):
-            result['source'] = row['content'].decode('utf-8')
-        return result
-
-    @app.get('/api/v1/projects/{project_id}/notes/{note_id}/download')
-    def download_note(project_id: int, note_id: int, person: Person, db: DB):
-        row = note_access(db, project_id, note_id, person)
-        from urllib.parse import quote
-        filename = row['filename'] or f'note-{note_id}.md'
-        return RawResponse(row['content'] if row['content'] is not None else row['body'].encode('utf-8'),
-                           media_type='application/octet-stream', headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(filename, safe='')})
 
     @app.get('/api/v1/projects/{project_id}/overview')
-    def overview(project_id: int, person: Person, db: DB, rank_by: str | None = None):
+    def overview(project_id: int, person: Person, db: DB):
         project = project_dict(db, project_access(db, project_id, person), person, True)
-        questions = []
-        raters = {person['actor']:{'actor':person['actor'],'name':person['name'],'kind':person['kind']}}
-        selected = rank_by or person['actor']
-        for question in project['main_questions']:
-            ends = [end_dict(db, row) for row in db.execute('SELECT e.* FROM open_ends e JOIN items i ON i.id=e.message_id '
-                "WHERE e.question_id=? AND e.state='open' AND i.archived=0 ORDER BY e.id DESC", (question['id'],))]
-            for end in ends:
-                for rating in end['ratings']:
-                    raters[rating['actor']] = {key:rating[key] for key in ('actor','name','kind')}
-            questions.append({'question':message_dict(db, get_item(db, project_id, question['id'])), 'open_ends':ends})
-        if selected not in raters:
-            selected = person['actor']
-        def rank(end):
-            value = next((rating['score'] for rating in end['ratings'] if rating['actor']==selected), None)
-            return (value is not None, value or 0, end['id'])
-        for group in questions:
-            group['open_ends'].sort(key=rank, reverse=True)
         latest = db.execute('SELECT * FROM items WHERE project_id=? AND archived=0 ORDER BY created_at DESC,id DESC LIMIT 15', (project_id,)).fetchall()
         grouped = {}
         for row in latest:
@@ -697,5 +517,4 @@ def install_topics(app, *, DB, Person, project_access, human, item_dict, get_ite
                 title = db.execute('SELECT title FROM topics WHERE id=?', (tid,)).fetchone()['title']
                 grouped[tid] = {'topic_id':tid, 'title':title, 'messages':[]}
             grouped[tid]['messages'].insert(0, message_dict(db, row))
-        return {'project':project,'notes':notes(project_id,person,db),'questions':questions,
-                'recent_topics':list(grouped.values()), 'rank_by':selected, 'raters':list(raters.values())}
+        return {'project':project,'recent_topics':list(grouped.values())}

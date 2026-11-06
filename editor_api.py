@@ -96,13 +96,13 @@ class EditorHub:
                     ensure_repo(root, int(repo.name))
                     close_edit_window(repo, reason='server-restart')
 
-    def person(self, ws, pid, csrf):
+    def person(self, ws, pid, csrf, *, check_csrf=True):
         with self.connect() as db:
             token = ws.cookies.get('research_session', '')
             row = db.execute('SELECT s.*,u.name FROM sessions s JOIN users u ON u.id=s.user_id '
                              'WHERE s.token_hash=? AND s.expires_at>?',
                              (hashlib.sha256(token.encode()).hexdigest(), datetime.now(timezone.utc).isoformat())).fetchone()
-            if not row or not hmac.compare_digest(csrf, row['csrf']):
+            if not row or (check_csrf and (not isinstance(csrf,str) or not hmac.compare_digest(csrf.encode(),row['csrf'].encode()))):
                 raise HTTPException(403, 'Your editor session expired. Sign in again.')
             who = {'user_id':row['user_id'], 'name':row['name'], 'kind':'human',
                    'actor':'human:'+str(row['user_id'])}
@@ -180,6 +180,11 @@ def install_editor(app, *, root, connect, DB, Person, project_access):
     async def editor_socket(ws: WebSocket, project_id: int):
         expected = os.environ.get('RESEARCH_PUBLIC_ORIGIN', '').rstrip('/') or str(ws.url).split('/api/')[0].replace('ws://','http://').replace('wss://','https://')
         if ws.headers.get('origin') != expected:
+            await ws.close(code=1008)
+            return
+        try:
+            hub.person(ws, project_id, '', check_csrf=False)
+        except HTTPException:
             await ws.close(code=1008)
             return
         await ws.accept()

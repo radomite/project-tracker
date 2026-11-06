@@ -62,7 +62,11 @@ document.addEventListener('click',async event=>{
   const button=event.target.closest('[data-agent-cancel],[data-agent-refresh],[data-agent-mail]');if(!button)return;
   const pid=S.project?.id;if(!pid)return;
   try{
-    if(button.hasAttribute('data-agent-refresh')){await loadAgents();return;}
+    if(button.hasAttribute('data-agent-refresh')){
+      button.disabled=true;
+      try{await loadAgents();}finally{if(button.isConnected)button.disabled=false;}
+      return;
+    }
     if(button.dataset.agentCancel){
       await api(`/projects/${pid}/agents/${button.dataset.role}/runs/${button.dataset.agentCancel}`,'DELETE');
       if(S.project?.id===pid&&S.view==='agents')await loadAgents(true);

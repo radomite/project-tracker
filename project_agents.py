@@ -111,9 +111,11 @@ def install_agents(app, *, root, DB, Person, project_access, human, now):
         if not available():
             raise HTTPException(503, 'Codex service is not configured. Start the agents Compose profile after storage recovery.')
         expected = Path(os.environ['RESEARCH_AGENT_SECRET_FILE']).read_text(encoding='utf-8').strip()
-        actual = request.headers.get('authorization', '').removeprefix('Bearer ')
-        if len(expected) < 32 or not hmac.compare_digest(expected, actual):
+        scheme,_,actual=request.headers.get('authorization', '').partition(' ')
+        if scheme.casefold()!='bearer' or len(expected)<32 or not hmac.compare_digest(expected.encode(),actual.encode()):
             raise HTTPException(401, 'Invalid Codex service credential.')
+
+    app.state.authenticate_service=service
 
     def agent(db, pid, role):
         row = db.execute('SELECT * FROM project_agents WHERE project_id=? AND role=?', (pid, role)).fetchone()

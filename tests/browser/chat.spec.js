@@ -294,7 +294,8 @@ test('sidebar searches all projects or the current project and opens each result
   expect(created.status()).toBe(201);const project=await created.json();
   const topic=await (await context.request.post(`/api/v1/projects/${project.id}/topics`,{headers,data:{title:'Orchid topic'}})).json();
   const message=await (await context.request.post(`/api/v1/projects/${project.id}/topics/${topic.id}/messages`,{headers,data:{body:'Orchid message with $x^2$.'}})).json();
-  await context.request.post(`/api/v1/projects/${project.id}/notes`,{headers,data:{title:'Orchid note',body:'The orchid note content.'}});
+  const note=await context.request.put(`/api/v1/projects/${project.id}/files/content?path=notes/Orchid%20note.md`,{headers:{...headers,'If-None-Match':'*','Content-Type':'application/octet-stream'},data:'The orchid note content.'});
+  expect(note.status()).toBe(200);
   const local=await (await context.request.post(`/api/v1/projects/${pid}/topics`,{headers,data:{title:'Local search'}})).json();
   await context.request.post(`/api/v1/projects/${pid}/topics/${local.id}/messages`,{headers,data:{body:'A local orchid message.'}});
   await page.goto(`/#project=${pid}&topic=${local.id}`);
@@ -622,7 +623,8 @@ test('dashboard questions are independent and message menus have no pin action',
  await page.getByRole('button',{name:'Add question',exact:true}).click();
  await expect(page.locator('.question-block')).toHaveCount(1);
  await expect(page.locator('.question-body .katex')).toHaveCount(1);
- expect((await (await context.request.get(`/api/v1/projects/${project.id}/items`)).json()).items).toEqual([]);
+ const initialTopics=await (await context.request.get(`/api/v1/projects/${project.id}/topics`)).json();
+ expect((await (await context.request.get(`/api/v1/projects/${project.id}/topics/${initialTopics[0].id}/messages`)).json()).messages).toEqual([]);
  await page.getByRole('button',{name:'Edit main question',exact:true}).click();
  await page.getByLabel('Question',{exact:true}).fill('An independent revised question');
  await page.getByRole('button',{name:'Save',exact:true}).click();

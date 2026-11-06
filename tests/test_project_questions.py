@@ -26,7 +26,8 @@ class ProjectQuestionTests(unittest.TestCase):
         response=collaborator.post(path,json={'body':'Can $x$ be bounded?'})
         self.assertEqual(response.status_code,201,response.text)
         q=response.json()
-        self.assertEqual(self.owner.get(self.path_for('/items')).json()['items'],[])
+        tid=self.owner.get(self.path_for('/topics')).json()[0]['id']
+        self.assertEqual(self.owner.get(self.path_for(f'/topics/{tid}/messages')).json()['messages'],[])
         self.assertEqual(self.questions()[0]['body'],q['body'])
         self.assertEqual(self.owner.get(self.path_for('/overview')).json()['project']['dashboard_questions'],self.questions())
         self.assertEqual(self.owner.get(self.path_for('/export')).json()['project']['dashboard_questions'],self.questions())
@@ -42,17 +43,16 @@ class ProjectQuestionTests(unittest.TestCase):
 
     def test_legacy_pins_copy_once_and_survive_message_changes(self):
         message=self.item(kind='question',title='Legacy title',body='Legacy body')
-        revision=self.owner.get(self.path_for()).json()['revision']
-        self.owner.put(self.path_for('/main-questions'),json={'revision':revision,'question_ids':[message['id']]})
         import sqlite3
         with closing(sqlite3.connect(self.path)) as db:
+            db.execute('INSERT INTO main_questions VALUES (?,?,?)',(self.pid,message['id'],0))
             db.execute("DELETE FROM question_migrations WHERE name='independent-questions'")
             db.commit()
         client=TestClient(create_app(self.path));self.clients.append(client)
         copied=self.questions()
         self.assertEqual(len(copied),1)
         self.assertEqual(copied[0]['body'],'Legacy title\n\nLegacy body')
-        self.owner.patch(self.path_for('/items/'+str(message['id'])),json=self.update(message,archived=True))
+        self.owner.patch(self.path_for('/messages/'+str(message['id'])),json=self.update(message,archived=True))
         self.assertEqual(self.questions(),copied)
         client2=TestClient(create_app(self.path));self.clients.append(client2)
         self.assertEqual(self.questions(),copied)

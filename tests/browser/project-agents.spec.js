@@ -31,6 +31,7 @@ test('project agents, cluster assignments, drafts, and offline status',async({pa
   await page.getByLabel('Request for Astra').fill('Keep my research draft');
   await page.getByLabel('Request for Sol').fill('Keep my editing draft');
   await page.getByRole('button',{name:'Refresh',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Refresh',exact:true})).toBeEnabled();
   await expect(page.getByLabel('Request for Astra')).toHaveValue('Keep my research draft');
   await expect(page.getByLabel('Request for Sol')).toHaveValue('Keep my editing draft');
   const clusterName='Common mathematics '+project.id;

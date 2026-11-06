@@ -75,14 +75,14 @@ class FileTests(unittest.TestCase):
         self.assertEqual(self.upload('agent.bin',client=writer).status_code,200)
         other=self.owner.post('/api/v1/projects',json={'title':'Other','objective':'Private'}).json()
         self.assertEqual(writer.get(self.path_for('/files',other['id'])).status_code,404)
-        note=self.owner.post(self.path_for('/notes'),json={'title':'Old note','body':'Preserved $x$'}).json()
+        note=fixtures.NotebookTests.legacy_note(self,'Old note','Preserved $x$')
         from app import create_app
         create_app(self.path)
         self.assertEqual(self.owner.get(self.path_for('/files/content'),params={'path':'notes/Old note.md'}).content,b'Preserved $x$')
         create_app(self.path)
         files=self.owner.get(self.path_for('/files')).json()['entries']
         self.assertEqual(sum(e['path']=='notes/Old note.md' for e in files),1)
-        self.assertEqual(self.owner.get(self.path_for(f'/notes/{note["id"]}')).json()['body'],'Preserved $x$')
+        self.assertEqual(self.owner.get(self.path_for(f'/notes/{note["id"]}')).status_code,404)
 
     def test_local_changes_persist_and_commit_as_one_batch_with_history(self):
         initial = self.owner.get(self.path_for('/files')).json()

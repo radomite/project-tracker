@@ -58,6 +58,12 @@ commit before downloading anything. Use a commit whose publish workflow succeede
 The script downloads the corresponding installer and public source, then starts
 the matching images. It does not upload your local database or files.
 
+Before connecting over SSH, the bootstrap checks that all three image publication
+jobs succeeded for the selected commit. If it stops with "not published yet",
+resolve the linked workflow failure and deploy the newly published commit. If
+publication succeeds but GHCR still reports "denied", check that the packages
+are public as described above.
+
 The default server installation is `$HOME/project-tracker`. Options:
 
 ```powershell
@@ -103,6 +109,8 @@ and route.** The default block is:
 ```caddyfile
 project.counthom.org {
     encode zstd gzip
+    @private path /internal /internal/* /health
+    respond @private 404
     reverse_proxy 127.0.0.1:18765
 }
 ```
@@ -114,13 +122,17 @@ sudo cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.before-project-tracker
 # Edit the existing file to add the block, preserving its other content.
 sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 sudo systemctl reload caddy
-curl --fail https://project.counthom.org/health
+curl --fail https://project.counthom.org/
 ```
 
 The bootstrap generates the fragment but does not rewrite the existing proxy
 configuration. If the server's Caddy is actually a container, configure its
 network/access to the backend first: `127.0.0.1` inside that container is not the
 host loopback endpoint. Do not apply the host-service block unchanged in that case.
+Only the login screen is served before authentication. Internal Codex routes and
+the Docker health endpoint return 404 through the public proxy; Docker checks
+health directly inside its container. Keep that path restriction when adapting
+the fragment to a container-based Caddy.
 See [Caddy's reverse-proxy documentation](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy).
 
 ## 4. Enable continuous deployment after the initial installation works
