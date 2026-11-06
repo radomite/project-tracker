@@ -1,0 +1,19 @@
+.history-scope{font-size:11px;color:var(--muted);margin:-8px 0 18px}
+.file-history-title{align-items:flex-start}
+.history-commit-stamp{display:flex;align-items:baseline;gap:8px;flex-shrink:0;white-space:nowrap}
+.history-commit-stamp time{font-size:10px;color:var(--muted);white-space:nowrap}
+.file-history-list{overflow-x:auto}
+.file-history-item{display:grid;grid-template-columns:var(--graph-width) minmax(150px,1fr);column-gap:4px;padding:0;min-width:calc(var(--graph-width) + 154px)}
+.file-history-content{min-width:0;padding:10px 0}
+.history-entry-meta{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:3px 7px;min-width:0;color:var(--muted);font-size:11px;text-align:right}
+.history-author{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.history-subject{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 6px;margin-top:6px}
+.file-history-item .history-subject p{margin:0}
+.git-integration{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.git-integration .icon{width:19px;height:19px;stroke-width:1.6}
+.history-graph{position:relative;align-self:stretch;pointer-events:none}
+.history-graph svg{display:block;position:absolute;top:0;left:0;overflow:visible}
+.history-refs{display:inline-flex;gap:5px;flex-wrap:wrap;margin:0}
+.history-ref{display:inline-block;border:1px solid #d8e1ec;border-radius:9px;background:#f0f4f9;color:#47688b;font-size:10px;line-height:1.4;padding:1px 7px;overflow-wrap:anywhere}
+.history-ref.main{color:#245c96;border-color:#a9c6e4;background:#e7f0fa;font-weight:600}
+.history-ref.tag{color:#886a36;background:#faf5e9;border-color:#e7d8b5}

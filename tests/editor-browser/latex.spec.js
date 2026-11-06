@@ -1,0 +1,31 @@
+const {test,expect}=require('@playwright/test');
+test.skip(!process.env.EDITOR_TEST_URL,'Requires the isolated Docker app and LaTeX worker.');
+test('LaTeX multi-file manuscript compiles in Docker, retains preview on errors, and keeps outputs out of Git',async({browser})=>{
+  const context=await browser.newContext(),page=await context.newPage();
+  const result=await context.request.post('/api/v1/auth/login',{data:{email:'editor@example.org',password:'editor-test-password'}});expect(result.ok()).toBeTruthy();
+  const csrf=(await result.json()).csrf,headers={'X-CSRF-Token':csrf};
+  const project=await context.request.post('/api/v1/projects',{headers,data:{title:'LaTeX manuscript'}});const pid=(await project.json()).id;
+  const put=async(path,text,etag=null)=>{
+    const r=await context.request.put(`/api/v1/projects/${pid}/files/content?path=${encodeURIComponent(path)}`,{headers:{...headers,...(etag?{'If-Match':etag}:{'If-None-Match':'*'}),'Content-Type':'application/octet-stream'},data:text});expect(r.ok()).toBeTruthy();return (await r.json()).etag;
+  };
+  await put('main.tex','\\documentclass{article}\n\\usepackage{amsmath,amsthm}\n\\begin{document}\n\\section{Docker manuscript}\n\\input{sections/proof}\nSee \\cite{test}.\n\\bibliographystyle{plain}\n\\bibliography{refs}\n\\end{document}\n');
+  await put('sections/proof.tex','An included proof with $x^2+y^2$.\n');
+  await put('refs.bib','@book{test,author={Ada Lovelace},title={A Test Reference},year={2026}}');
+  await context.request.post(`/api/v1/projects/${pid}/files/commit`,{headers,data:{}});
+  await page.goto(`/#project=${pid}&view=editor&file=main.tex`);
+  await expect(page.getByRole('textbox',{name:'Manuscript source'})).toBeVisible();
+  await expect(page.locator('#editor-build-status')).toContainText('1 page',{timeout:60000});
+  await expect(page.locator('#editor-pages canvas')).toHaveCount(1);
+  const download=await page.locator('#editor-download').getAttribute('href');expect(download).toMatch(/^blob:/);
+  let listing=await (await context.request.get(`/api/v1/projects/${pid}/files`)).json();
+  expect(listing.history.pending).toHaveLength(0);
+  expect(listing.entries.filter(e=>e.kind==='file').map(e=>e.path)).toEqual(['main.tex','refs.bib','sections/proof.tex']);
+  const input=page.getByRole('textbox',{name:'Manuscript source'});
+  await input.click();await input.press('Control+Home');await input.pressSequentially('\\undefinedcommand\n');
+  await expect(page.locator('#editor-save-status')).toContainText('Saved');
+  await expect(page.locator('#editor-build-status')).toContainText('Compilation failed',{timeout:60000});
+  await expect(page.locator('#editor-download')).toHaveAttribute('href',download);
+  await expect(page.locator('#editor-errors')).toContainText('Undefined control sequence');
+  listing=await (await context.request.get(`/api/v1/projects/${pid}/files`)).json();expect(listing.history.pending).toHaveLength(1);
+  await context.close();
+});

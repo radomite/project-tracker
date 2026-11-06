@@ -1,0 +1,166 @@
+name: result-organizer
+
+x-python-image: &python-image ${PYTHON_IMAGE:-python:3.13-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72}
+x-app-build: &app-build
+  context: .
+  dockerfile: Dockerfile
+  target: app
+  args:
+    PYTHON_IMAGE: *python-image
+
+x-tool: &tool
+  profiles: [tools]
+  init: true
+  user: "${TOOL_UID:-1000}:${TOOL_GID:-1000}"
+  working_dir: /work
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs:
+    - /tmp:rw,nosuid,nodev,mode=1777
+  environment:
+    HOME: /tmp/tracker-tool
+    XDG_CACHE_HOME: /work/.cache
+    PYTHONDONTWRITEBYTECODE: "1"
+  volumes:
+    - type: bind
+      source: ${TOOL_WORKSPACE:-./tool-workspace}
+      target: /work
+      bind:
+        create_host_path: false
+    - type: volume
+      source: project-files
+      target: /projects
+      read_only: true
+    - type: bind
+      source: ./docker/tool-entrypoint.sh
+      target: /opt/tracker/tool-entrypoint.sh
+      read_only: true
+      bind:
+        create_host_path: false
+
+services:
+  app:
+    image: ${APP_IMAGE:-result-organizer-web:local}
+    build: *app-build
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8765}:8765"
+    environment:
+      RESEARCH_DB: /data/research.db
+      RESEARCH_SECURE_COOKIE: ${RESEARCH_SECURE_COOKIE:-0}
+      RESEARCH_EDITOR_IDLE_SECONDS: ${RESEARCH_EDITOR_IDLE_SECONDS:-120}
+      RESEARCH_LATEX_URL: http://latex:8790
+      RESEARCH_AGENT_SECRET_FILE: /agent-link/token
+    volumes:
+      - app-data:/data
+      - project-files:/data/research-files
+      - agent-link:/agent-link:ro
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+    mem_limit: 768m
+    cpus: "1.0"
+    networks: [default, typesetting]
+
+  latex:
+    image: result-organizer-latex:local
+    build:
+      context: .
+      dockerfile: docker/latex/Dockerfile
+      args:
+        PYTHON_IMAGE: *python-image
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    cpus: "1.0"
+    pids_limit: 64
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,mode=1777,size=256m
+    networks: [typesetting]
+
+  codex:
+    profiles: [agents]
+    image: result-organizer-codex:local
+    build:
+      context: .
+      dockerfile: docker/codex/Dockerfile
+      args:
+        PYTHON_IMAGE: *python-image
+        CODEX_VERSION: ${TRACKER_CODEX_VERSION:-0.167.0}
+    init: true
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    read_only: true
+    cap_drop: [ALL]
+    # FOWNER lets the supervisor secure directories after assigning worker UIDs.
+    cap_add: [SETUID, SETGID, CHOWN, FOWNER, DAC_OVERRIDE, KILL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,mode=1777,size=64m
+    environment:
+      RESEARCH_APP_URL: http://app:8765
+      RESEARCH_AGENT_SECRET_FILE: /agent-link/token
+    volumes:
+      - codex-state:/state
+      - agent-link:/agent-link
+
+  git:
+    <<: *tool
+    image: ${APP_IMAGE:-result-organizer-web:local}
+    build: *app-build
+    entrypoint: [/bin/sh, /opt/tracker/tool-entrypoint.sh, git]
+    command: [--version]
+
+  python:
+    <<: *tool
+    image: *python-image
+    entrypoint: [/bin/sh, /opt/tracker/tool-entrypoint.sh, python]
+    command: [--version]
+
+  typst:
+    <<: *tool
+    image: ${TYPST_IMAGE:-ghcr.io/typst/typst:0.15.1@sha256:032e292249bcd378480cc7c142cfa324b63ef8aadeb88d7e7230320c4c9c422f}
+    entrypoint: [/bin/sh, /opt/tracker/tool-entrypoint.sh, typst]
+    command: [--version]
+
+  texlive:
+    <<: *tool
+    image: ${TEXLIVE_IMAGE:-texlive/texlive:latest@sha256:07e8062637249c4f780ca59f42cc2ed592bc2dc1db4320769406aee3f98aa70e}
+    entrypoint: [/bin/sh, /opt/tracker/tool-entrypoint.sh]
+    command: [latexmk, -v]
+
+  lean:
+    <<: *tool
+    image: result-organizer-lean:local
+    build:
+      context: ./docker/lean
+      args:
+        MATHLIB_REVISION: ${MATHLIB_REVISION:-56a005855ea17e0b0958f73ec801ae140b0a1679}
+    entrypoint: [/bin/sh, /opt/tracker/tool-entrypoint.sh, lean-with-mathlib]
+    command: [--version]
+
+  sagemath:
+    <<: *tool
+    # The verified upstream Sage image currently publishes linux/amd64 only.
+    platform: linux/amd64
+    image: ${SAGEMATH_IMAGE:-sagemath/sagemath:10.10@sha256:310dfe23fc786f3a5a06a7b0387c60201ec79b32c0db941b7624505ee5edb565}
+    entrypoint: [/bin/sh, /opt/tracker/tool-entrypoint.sh, sage]
+    command: [--version]
+
+volumes:
+  app-data:
+  project-files:
+  codex-state:
+  agent-link:
+
+networks:
+  typesetting:
+    internal: true

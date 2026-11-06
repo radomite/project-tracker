@@ -1,0 +1,5 @@
+fastapi==0.135.3
+uvicorn==0.43.0
+httpx==0.28.1
+pycrdt==0.14.13
+websockets==15.0.1

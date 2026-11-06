@@ -1,0 +1,38 @@
+{
+  "name": "research-notebook",
+  "private": true,
+  "version": "0.1.0",
+  "license": "AGPL-3.0-or-later",
+  "scripts": {
+    "build": "npm run vendor && npm run build:composer && npm run build:editor",
+    "vendor": "node scripts/vendor.mjs",
+    "test:browser": "playwright test",
+    "build:composer": "node scripts/build-composer.mjs",
+    "build:editor": "node scripts/build-editor.mjs"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "6.20.4",
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/search": "6.7.2",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.15",
+    "@texlyre/typst-ts-renderer": "0.8.0-rc3",
+    "@texlyre/typst-ts-web-compiler": "0.8.0-rc3",
+    "@texlyre/typst.ts": "0.8.0-rc3",
+    "codemirror": "6.0.2",
+    "codemirror-lang-latex": "0.6.1",
+    "codemirror-lang-typst": "0.6.0",
+    "dompurify": "^3.3.0",
+    "esbuild": "0.27.7",
+    "katex": "^0.16.25",
+    "lib0": "0.2.119",
+    "marked": "^17.0.0",
+    "pdfjs-dist": "5.7.284",
+    "y-codemirror.next": "0.3.5",
+    "y-protocols": "1.0.7",
+    "yjs": "13.6.32"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.0"
+  }
+}

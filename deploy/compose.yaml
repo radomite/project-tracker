@@ -1,0 +1,83 @@
+# Standalone production stack: commit-tagged GHCR images, no server-side builds.
+name: project-tracker
+services:
+  app:
+    image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX}/app:${IMAGE_TAG:?Set IMAGE_TAG}
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${APP_PORT:-18765}:8765"
+    command: [python, -m, uvicorn, 'app:app', --host, 0.0.0.0, --port, '8765', --workers, '1', --proxy-headers, --forwarded-allow-ips, '*']
+    environment:
+      RESEARCH_DB: /data/research.db
+      RESEARCH_SECURE_COOKIE: '1'
+      RESEARCH_PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-https://project.counthom.org}
+      RESEARCH_SETUP_TOKEN_FILE: /run/secrets/setup_token
+      RESEARCH_LATEX_URL: http://latex:8790
+      RESEARCH_AGENT_SECRET_FILE: /agent-link/token
+    secrets: [setup_token]
+    volumes:
+      - app-data:/data
+      - project-files:/data/research-files
+      - agent-link:/agent-link:ro
+    read_only: true
+    tmpfs: [/tmp:rw,nosuid,nodev,size=128m]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    cpus: '1.0'
+    pids_limit: 128
+    logging: &logging
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+    networks: [default, typesetting]
+
+  latex:
+    image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX}/latex:${IMAGE_TAG:?Set IMAGE_TAG}
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp:rw,nosuid,nodev,mode=1777,size=256m]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 768m
+    cpus: '1.0'
+    pids_limit: 64
+    logging: *logging
+    networks: [typesetting]
+
+  codex:
+    profiles: [agents]
+    image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX}/codex:${IMAGE_TAG:?Set IMAGE_TAG}
+    init: true
+    restart: unless-stopped
+    depends_on:
+      app: {condition: service_healthy}
+    read_only: true
+    tmpfs: [/tmp:rw,nosuid,nodev,mode=1777,size=64m]
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN, FOWNER, DAC_OVERRIDE, KILL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 2g
+    cpus: '2.0'
+    pids_limit: 256
+    environment:
+      RESEARCH_APP_URL: http://app:8765
+      RESEARCH_AGENT_SECRET_FILE: /agent-link/token
+    volumes:
+      - codex-state:/state
+      - agent-link:/agent-link
+    logging: *logging
+
+volumes:
+  app-data:
+  project-files:
+  codex-state:
+  agent-link:
+
+secrets:
+  setup_token:
+    file: ${SETUP_TOKEN_FILE:?Set SETUP_TOKEN_FILE}
+
+networks:
+  typesetting: {internal: true}
